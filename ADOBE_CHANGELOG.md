@@ -16,6 +16,10 @@ v{E major}.{E minor}.{E fix}-{A major}.{A minor}.{A fix}-adobe
 
 # Log
 
+## v1.14.4-2.10.0-adobe
+
+- set envoy-original-path-with-double-slash header when removing double slashes in path
+
 ## v1.14.4-2.9.0-adobe
 
 - provide alternative implementation of Envoy::Http::RequestIDExtension
