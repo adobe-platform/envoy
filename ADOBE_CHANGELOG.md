@@ -18,7 +18,7 @@ v{E major}.{E minor}.{E fix}-{A major}.{A minor}.{A fix}-adobe
 
 ## v1.14.4-2.10.0-adobe
 
-- set envoy-original-path-with-double-slash header when removing double slashes in path
+- set envoy-original-path-unmerged-slashes header when removing double slashes
 
 ## v1.14.4-2.9.0-adobe
 
