@@ -90,13 +90,13 @@ TEST_F(PathUtilityTest, NormalizeCasePath) {
 TEST_F(PathUtilityTest, MergeSlashes) {
   auto mergeSlashes = [this](const std::string& path_value) {
     // clear the original path with double slash header
-    headers_.remove(Headers::get().EnvoyOriginalPathWithDoubleSlash);
+    headers_.remove(Headers::get().EnvoyOriginalPathUnmergedSlashes);
 
     auto& path_header = pathHeaderEntry(path_value);
     PathUtil::mergeSlashes(headers_);
     auto sanitized_path_value = path_header.value().getStringView();
 
-    auto original_header_value = headers_.get(Headers::get().EnvoyOriginalPathWithDoubleSlash);
+    auto original_header_value = headers_.get(Headers::get().EnvoyOriginalPathUnmergedSlashes);
     // if we sanitized the path verify the original path with double slash header is set and correct
     if (path_value != sanitized_path_value) {
       // check the header value isn't null
