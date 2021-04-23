@@ -1,0 +1,451 @@
+From b9dfe0464c351b0ed1c019eaefb228c60e8169a0 Mon Sep 17 00:00:00 2001
+From: Ryan Burn <ryan.burn@gmail.com>
+Date: Sun, 29 Sep 2019 10:15:13 -0700
+Subject: [PATCH 1/2] Updates for OpenTracing-1.6.
+
+---
+ WORKSPACE                                     |  2 +-
+ ci/install_opentracing.sh                     |  2 +-
+ src/common/utility.cpp                        |  2 +
+ src/tracer/legacy/BUILD                       |  1 +
+ .../legacy/legacy_immutable_span_context.cpp  | 13 +++++++
+ .../legacy/legacy_immutable_span_context.h    |  3 ++
+ src/tracer/legacy/legacy_span.cpp             | 35 ++++++++++++++++-
+ src/tracer/legacy/legacy_span.h               | 12 ++++++
+ src/tracer/lightstep_span_context.cpp         | 18 +++++++++
+ src/tracer/lightstep_span_context.h           |  4 ++
+ src/tracer/span.cpp                           | 38 ++++++++++++++++++-
+ src/tracer/span.h                             | 12 ++++++
+ 12 files changed, 138 insertions(+), 4 deletions(-)
+
+diff --git a/WORKSPACE b/WORKSPACE
+index 5e80a60b..d66021be 100644
+--- a/WORKSPACE
++++ b/WORKSPACE
+@@ -24,7 +24,7 @@ rules_foreign_cc_dependencies([
+ git_repository(
+     name = "io_opentracing_cpp",
+     remote = "https://github.com/opentracing/opentracing-cpp",
+-    commit = "ac50154a7713877f877981c33c3375003b6ebfe1",
++    commit = "4bb431f7728eaf383a07e86f9754a5b67575dab0",
+ )
+ 
+ git_repository(
+diff --git a/ci/install_opentracing.sh b/ci/install_opentracing.sh
+index 53a5674c..af875a26 100755
+--- a/ci/install_opentracing.sh
++++ b/ci/install_opentracing.sh
+@@ -2,7 +2,7 @@
+ 
+ set -e
+ 
+-[ -z "${OPENTRACING_VERSION}" ] && export OPENTRACING_VERSION="v1.5.0"
++[ -z "${OPENTRACING_VERSION}" ] && export OPENTRACING_VERSION="v1.6.0"
+ 
+ # Build OpenTracing
+ cd /
+diff --git a/src/common/utility.cpp b/src/common/utility.cpp
+index ac5a7213..20645cc9 100644
+--- a/src/common/utility.cpp
++++ b/src/common/utility.cpp
+@@ -145,6 +145,8 @@ struct JsonValueVisitor {
+ 
+   void operator()(const char* s) { WriteEscapedString(writer, s); }
+ 
++  void operator()(opentracing::string_view s) { WriteEscapedString(writer, s); }
++
+   void operator()(const opentracing::Values& values) {
+     writer << '[';
+     size_t i = 0;
+diff --git a/src/tracer/legacy/BUILD b/src/tracer/legacy/BUILD
+index 700f910e..95f8ec04 100644
+--- a/src/tracer/legacy/BUILD
++++ b/src/tracer/legacy/BUILD
+@@ -22,6 +22,7 @@ lightstep_cc_library(
+         "//src/tracer:lightstep_span_context_interface",
+         "//src/tracer:utility_lib",
+         "//src/tracer:tag_lib",
++        ":legacy_immutable_span_context_lib",
+     ],
+ )
+ 
+diff --git a/src/tracer/legacy/legacy_immutable_span_context.cpp b/src/tracer/legacy/legacy_immutable_span_context.cpp
+index 5c41a5c4..8d8fd610 100644
+--- a/src/tracer/legacy/legacy_immutable_span_context.cpp
++++ b/src/tracer/legacy/legacy_immutable_span_context.cpp
+@@ -34,4 +34,17 @@ void LegacyImmutableSpanContext::ForeachBaggageItem(
+     }
+   }
+ }
++
++//--------------------------------------------------------------------------------------------------
++// Clone
++//--------------------------------------------------------------------------------------------------
++std::unique_ptr<opentracing::SpanContext> LegacyImmutableSpanContext::Clone()
++    const noexcept try {
++  std::unique_ptr<opentracing::SpanContext> result{
++      new LegacyImmutableSpanContext{trace_id_, span_id_, sampled_,
++                                     BaggageProtobufMap{baggage_}}};
++  return result;
++} catch (const std::exception& /*e*/) {
++  return nullptr;
++}
+ }  // namespace lightstep
+diff --git a/src/tracer/legacy/legacy_immutable_span_context.h b/src/tracer/legacy/legacy_immutable_span_context.h
+index 3cb0872e..f0b9c94f 100644
+--- a/src/tracer/legacy/legacy_immutable_span_context.h
++++ b/src/tracer/legacy/legacy_immutable_span_context.h
+@@ -18,6 +18,7 @@ class LegacyImmutableSpanContext final : public LightStepSpanContext {
+ 
+   bool sampled() const noexcept override { return sampled_; }
+ 
++  // opentracing::SpanContext
+   void ForeachBaggageItem(
+       std::function<bool(const std::string& key, const std::string& value)> f)
+       const override;
+@@ -40,6 +41,8 @@ class LegacyImmutableSpanContext final : public LightStepSpanContext {
+     return this->InjectImpl(propagation_options, writer);
+   }
+ 
++  std::unique_ptr<opentracing::SpanContext> Clone() const noexcept override;
++
+  private:
+   uint64_t trace_id_;
+   uint64_t span_id_;
+diff --git a/src/tracer/legacy/legacy_span.cpp b/src/tracer/legacy/legacy_span.cpp
+index 94f1398e..b2e6c0e8 100644
+--- a/src/tracer/legacy/legacy_span.cpp
++++ b/src/tracer/legacy/legacy_span.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "common/random.h"
+ #include "common/utility.h"
++#include "tracer/legacy/legacy_immutable_span_context.h"
+ #include "tracer/tag.h"
+ #include "tracer/utility.h"
+ 
+@@ -227,8 +228,25 @@ std::string LegacySpan::BaggageItem(
+ //------------------------------------------------------------------------------
+ void LegacySpan::Log(std::initializer_list<
+                      std::pair<opentracing::string_view, opentracing::Value>>
++                         fields) noexcept {
++  this->Log(SystemClock::now(), fields);
++}
++
++void LegacySpan::Log(opentracing::SystemTime timestamp,
++                     std::initializer_list<std::pair<opentracing::string_view,
++                                                     opentracing::Value>>
+                          fields) noexcept try {
+-  auto timestamp = SystemClock::now();
++  std::lock_guard<std::mutex> lock_guard{mutex_};
++  *span_.mutable_logs()->Add() =
++      ToLog(timestamp, std::begin(fields), std::end(fields));
++} catch (const std::exception& e) {
++  logger_.Error("Log failed: ", e.what());
++}
++
++void LegacySpan::Log(
++    opentracing::SystemTime timestamp,
++    const std::vector<std::pair<opentracing::string_view, opentracing::Value>>&
++        fields) noexcept try {
+   std::lock_guard<std::mutex> lock_guard{mutex_};
+   *span_.mutable_logs()->Add() =
+       ToLog(timestamp, std::begin(fields), std::end(fields));
+@@ -250,6 +268,21 @@ void LegacySpan::ForeachBaggageItem(
+   }
+ }
+ 
++//--------------------------------------------------------------------------------------------------
++// Clone
++//--------------------------------------------------------------------------------------------------
++std::unique_ptr<opentracing::SpanContext> LegacySpan::Clone() const
++    noexcept try {
++  std::lock_guard<std::mutex> lock_guard{mutex_};
++  std::unique_ptr<opentracing::SpanContext> result{
++      new LegacyImmutableSpanContext{
++          this->trace_id(), this->span_id(), sampled_,
++          BaggageProtobufMap{span_.span_context().baggage()}}};
++  return result;
++} catch (const std::exception& /*e*/) {
++  return nullptr;
++}
++
+ //------------------------------------------------------------------------------
+ // sampled
+ //------------------------------------------------------------------------------
+diff --git a/src/tracer/legacy/legacy_span.h b/src/tracer/legacy/legacy_span.h
+index 779f7c71..f7340a01 100644
+--- a/src/tracer/legacy/legacy_span.h
++++ b/src/tracer/legacy/legacy_span.h
+@@ -44,6 +44,16 @@ class LegacySpan final : public opentracing::Span, public LightStepSpanContext {
+            std::pair<opentracing::string_view, opentracing::Value>>
+                fields) noexcept override;
+ 
++  void Log(opentracing::SystemTime timestamp,
++           std::initializer_list<
++               std::pair<opentracing::string_view, opentracing::Value>>
++               fields) noexcept override;
++
++  void Log(opentracing::SystemTime timestamp,
++           const std::vector<
++               std::pair<opentracing::string_view, opentracing::Value>>&
++               fields) noexcept override;
++
+   const opentracing::SpanContext& context() const noexcept override {
+     return *this;
+   }
+@@ -55,6 +65,8 @@ class LegacySpan final : public opentracing::Span, public LightStepSpanContext {
+       std::function<bool(const std::string& key, const std::string& value)> f)
+       const override;
+ 
++  std::unique_ptr<opentracing::SpanContext> Clone() const noexcept override;
++
+   bool sampled() const noexcept override;
+ 
+   uint64_t trace_id() const noexcept override {
+diff --git a/src/tracer/lightstep_span_context.cpp b/src/tracer/lightstep_span_context.cpp
+index d3231556..e4321958 100644
+--- a/src/tracer/lightstep_span_context.cpp
++++ b/src/tracer/lightstep_span_context.cpp
+@@ -1,6 +1,24 @@
+ #include "tracer/lightstep_span_context.h"
+ 
+ namespace lightstep {
++//--------------------------------------------------------------------------------------------------
++// ToTraceID
++//--------------------------------------------------------------------------------------------------
++std::string LightStepSpanContext::ToTraceID() const noexcept try {
++  return std::to_string(this->trace_id());
++} catch (const std::exception& /*e*/) {
++  return {};
++}
++
++//--------------------------------------------------------------------------------------------------
++// ToSpanID
++//--------------------------------------------------------------------------------------------------
++std::string LightStepSpanContext::ToSpanID() const noexcept try {
++  return std::to_string(this->span_id());
++} catch (const std::exception& /*e*/) {
++  return {};
++}
++
+ //------------------------------------------------------------------------------
+ // operator==
+ //------------------------------------------------------------------------------
+diff --git a/src/tracer/lightstep_span_context.h b/src/tracer/lightstep_span_context.h
+index c3f4d890..d363bbc7 100644
+--- a/src/tracer/lightstep_span_context.h
++++ b/src/tracer/lightstep_span_context.h
+@@ -27,6 +27,10 @@ class LightStepSpanContext : public opentracing::SpanContext {
+   virtual opentracing::expected<void> Inject(
+       const PropagationOptions& propagation_options,
+       const opentracing::HTTPHeadersWriter& writer) const = 0;
++
++  std::string ToTraceID() const noexcept final;
++
++  std::string ToSpanID() const noexcept final;
+ };
+ 
+ bool operator==(const LightStepSpanContext& lhs,
+diff --git a/src/tracer/span.cpp b/src/tracer/span.cpp
+index dc74999e..cdcb02c0 100644
+--- a/src/tracer/span.cpp
++++ b/src/tracer/span.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "common/random.h"
+ #include "common/utility.h"
++#include "tracer/legacy/legacy_immutable_span_context.h"
+ #include "tracer/serialization.h"
+ #include "tracer/tag.h"
+ #include "tracer/utility.h"
+@@ -157,7 +158,15 @@ std::string Span::BaggageItem(opentracing::string_view restricted_key) const
+ void Span::Log(std::initializer_list<
+                std::pair<opentracing::string_view, opentracing::Value>>
+                    fields) noexcept try {
+-  auto timestamp = SystemClock::now();
++  this->Log(SystemClock::now(), fields);
++} catch (const std::exception& e) {
++  tracer_->logger().Error("Log failed: ", e.what());
++}
++
++void Span::Log(opentracing::SystemTime timestamp,
++               std::initializer_list<
++                   std::pair<opentracing::string_view, opentracing::Value>>
++                   fields) noexcept try {
+   SpinLockGuard lock_guard{mutex_};
+   if (is_finished_) {
+     return;
+@@ -167,6 +176,19 @@ void Span::Log(std::initializer_list<
+   tracer_->logger().Error("Log failed: ", e.what());
+ }
+ 
++void Span::Log(
++    opentracing::SystemTime timestamp,
++    const std::vector<std::pair<opentracing::string_view, opentracing::Value>>&
++        fields) noexcept try {
++  SpinLockGuard lock_guard{mutex_};
++  if (is_finished_) {
++    return;
++  }
++  WriteLog(stream_, timestamp, fields.data(), fields.data() + fields.size());
++} catch (const std::exception& e) {
++  tracer_->logger().Error("Log failed: ", e.what());
++}
++
+ //------------------------------------------------------------------------------
+ // ForeachBaggageItem
+ //------------------------------------------------------------------------------
+@@ -181,6 +203,20 @@ void Span::ForeachBaggageItem(
+   }
+ }
+ 
++//--------------------------------------------------------------------------------------------------
++// Clone
++//--------------------------------------------------------------------------------------------------
++std::unique_ptr<opentracing::SpanContext> Span::Clone() const noexcept try {
++  SpinLockGuard lock_guard{mutex_};
++  BaggageProtobufMap baggage_copy{baggage_.begin(), baggage_.end()};
++  std::unique_ptr<opentracing::SpanContext> result{
++      new LegacyImmutableSpanContext{trace_id_, span_id_, sampled_,
++                                     std::move(baggage_copy)}};
++  return result;
++} catch (const std::exception& /*e*/) {
++  return nullptr;
++}
++
+ //------------------------------------------------------------------------------
+ // sampled
+ //------------------------------------------------------------------------------
+diff --git a/src/tracer/span.h b/src/tracer/span.h
+index 658e1413..c29964c4 100644
+--- a/src/tracer/span.h
++++ b/src/tracer/span.h
+@@ -46,6 +46,16 @@ class Span final : public opentracing::Span, public LightStepSpanContext {
+            std::pair<opentracing::string_view, opentracing::Value>>
+                fields) noexcept override;
+ 
++  void Log(opentracing::SystemTime timestamp,
++           std::initializer_list<
++               std::pair<opentracing::string_view, opentracing::Value>>
++               fields) noexcept override;
++
++  void Log(opentracing::SystemTime timestamp,
++           const std::vector<
++               std::pair<opentracing::string_view, opentracing::Value>>&
++               fields) noexcept override;
++
+   const opentracing::SpanContext& context() const noexcept override {
+     return *this;
+   }
+@@ -76,6 +86,8 @@ class Span final : public opentracing::Span, public LightStepSpanContext {
+     return this->InjectImpl(propagation_options, writer);
+   }
+ 
++  std::unique_ptr<opentracing::SpanContext> Clone() const noexcept override;
++
+   // LightStepSpanContext
+   bool sampled() const noexcept override;
+ 
+
+From 87f9c8745c257724076ac2295c885d7f6c9e208c Mon Sep 17 00:00:00 2001
+From: Ryan Burn <ryan.burn@gmail.com>
+Date: Sun, 29 Sep 2019 10:50:08 -0700
+Subject: [PATCH 2/2] Add test coverage for new ot-1.6 api.
+
+---
+ src/tracer/lightstep_span_context.cpp | 14 +++++++++++--
+ test/tracer/tracer_test.cpp           | 29 ++++++++++++++++++++++++++-
+ 2 files changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/src/tracer/lightstep_span_context.cpp b/src/tracer/lightstep_span_context.cpp
+index e4321958..aedce003 100644
+--- a/src/tracer/lightstep_span_context.cpp
++++ b/src/tracer/lightstep_span_context.cpp
+@@ -1,11 +1,21 @@
+ #include "tracer/lightstep_span_context.h"
+ 
++#include "common/utility.h"
++
+ namespace lightstep {
++//--------------------------------------------------------------------------------------------------
++// ToHexString
++//--------------------------------------------------------------------------------------------------
++static std::string ToHexString(uint64_t x) {
++  std::array<char, Num64BitHexDigits> buffer;
++  return Uint64ToHex(x, buffer.data());
++}
++
+ //--------------------------------------------------------------------------------------------------
+ // ToTraceID
+ //--------------------------------------------------------------------------------------------------
+ std::string LightStepSpanContext::ToTraceID() const noexcept try {
+-  return std::to_string(this->trace_id());
++  return ToHexString(this->trace_id());
+ } catch (const std::exception& /*e*/) {
+   return {};
+ }
+@@ -14,7 +24,7 @@ std::string LightStepSpanContext::ToTraceID() const noexcept try {
+ // ToSpanID
+ //--------------------------------------------------------------------------------------------------
+ std::string LightStepSpanContext::ToSpanID() const noexcept try {
+-  return std::to_string(this->span_id());
++  return ToHexString(this->span_id());
+ } catch (const std::exception& /*e*/) {
+   return {};
+ }
+diff --git a/test/tracer/tracer_test.cpp b/test/tracer/tracer_test.cpp
+index 1b31b43e..56a34de1 100644
+--- a/test/tracer/tracer_test.cpp
++++ b/test/tracer/tracer_test.cpp
+@@ -6,6 +6,7 @@
+ #include "test/recorder/in_memory_recorder.h"
+ #include "test/utility.h"
+ #include "tracer/legacy/legacy_tracer_impl.h"
++#include "tracer/lightstep_span_context.h"
+ #include "tracer/tag.h"
+ #include "tracer/tracer_impl.h"
+ 
+@@ -197,8 +198,12 @@ TEST_CASE("tracer") {
+       auto span = tracer->StartSpan("a");
+       REQUIRE(span);
+       span->Log({{"abc", 123}});
++      span->Log(
++          std::chrono::system_clock::now(),
++          std::vector<std::pair<opentracing::string_view, opentracing::Value>>{
++              {"abc", 123}});
+       span->Finish();
+-      REQUIRE(recorder->top().logs().size() == 1);
++      REQUIRE(recorder->top().logs().size() == 2);
+     }
+ 
+     SECTION(tracer_type + ": Logs can be added with FinishSpanOptions.") {
+@@ -219,6 +224,28 @@ TEST_CASE("tracer") {
+       span->SetTag("abc", 123);
+       span->Log({{"abc", 123}});
+     }
++
++    SECTION(tracer_type + ": span contexts can be cloned") {
++      auto span = tracer->StartSpan("a");
++      REQUIRE(span);
++      span->SetBaggageItem("abc", "123");
++      auto span_context1 = span->context().Clone();
++      REQUIRE(span_context1 != nullptr);
++      auto span_context2 = span_context1->Clone();
++      REQUIRE(span_context2 != nullptr);
++      REQUIRE(dynamic_cast<const LightStepSpanContext&>(span->context()) ==
++              dynamic_cast<LightStepSpanContext&>(*span_context1));
++    }
++
++    SECTION(tracer_type + ": supports accessing context IDs as strings") {
++      auto span = tracer->StartSpan("a");
++      REQUIRE(span);
++      auto trace_id = span->context().ToTraceID();
++      REQUIRE(!trace_id.empty());
++      auto span_id = span->context().ToSpanID();
++      REQUIRE(!span_id.empty());
++      REQUIRE(trace_id != span_id);
++    }
+   }
+ }
+ 

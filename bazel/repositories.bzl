@@ -455,9 +455,7 @@ def _com_github_nghttp2_nghttp2():
 def _io_opentracing_cpp():
     _repository_impl(
         name = "io_opentracing_cpp",
-        patch_args = ["-p1"],
         # Workaround for LSAN false positive in https://github.com/envoyproxy/envoy/issues/7647
-        patches = ["@envoy//bazel:io_opentracing_cpp.patch"],
     )
     native.bind(
         name = "opentracing",
@@ -465,7 +463,11 @@ def _io_opentracing_cpp():
     )
 
 def _com_lightstep_tracer_cpp():
-    _repository_impl("com_lightstep_tracer_cpp")
+    _repository_impl(
+        name = "com_lightstep_tracer_cpp",
+        patch_args = ["-p1"],
+        patches = ["@envoy//bazel:215.patch"],
+    )
     native.bind(
         name = "lightstep",
         actual = "@com_lightstep_tracer_cpp//:manual_tracer_lib",
