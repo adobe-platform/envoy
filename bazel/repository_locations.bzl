@@ -329,22 +329,8 @@ DEPENDENCY_REPOSITORIES_SPEC = dict(
         extensions = [
             "envoy.tracers.datadog",
             "envoy.tracers.dynamic_ot",
-            "envoy.tracers.lightstep",
         ],
         last_updated = "2019-01-16",
-        cpe = "N/A",
-    ),
-    com_lightstep_tracer_cpp = dict(
-        project_name = "lightstep-tracer-cpp",
-        project_desc = "LightStep distributed tracing library for C++",
-        project_url = "https://github.com/lightstep/lightstep-tracer-cpp",
-        version = "v0.14.0",
-        sha256 = "bb1940edd3099b0c0877eb54ceedaf3f2a7b1ae133e5e4ce0bcb4ca07de3b14a",
-        strip_prefix = "lightstep-tracer-cpp-0.14.0",
-        urls = ["https://github.com/lightstep/lightstep-tracer-cpp/archive/{version}.tar.gz"],
-        use_category = ["observability_ext"],
-        extensions = ["envoy.tracers.lightstep"],
-        last_updated = "2020-08-24",
         cpe = "N/A",
     ),
     com_github_datadog_dd_opentracing_cpp = dict(
